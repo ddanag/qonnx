@@ -28,9 +28,10 @@
 
 import qonnx.custom_op.registry as registry
 from qonnx.core.datatype import DataType, ScaledIntType
+from qonnx.custom_op.registry import is_custom_op
 from qonnx.transformation.base import Transformation
 from qonnx.transformation.qcdq_to_qonnx import extract_elem_type
-from qonnx.util.basic import get_by_name, is_finn_op
+from qonnx.util.basic import get_by_name
 
 
 def is_scaled_int(x):
@@ -38,9 +39,9 @@ def is_scaled_int(x):
     return x.is_integer() or x.is_fixed_point() or isinstance(x, ScaledIntType)
 
 
-def infer_mac_result_dtype(idtypes, possible_negation):
-    # will default to float32 unless specific cases detected
-    ret = DataType["FLOAT32"]
+def infer_mac_result_dtype(idtypes, odtype_orig, possible_negation):
+    # will default to original output dtype unless specific cases detected
+    ret = odtype_orig
     # result may be signed if:
     # - any of the operands are signed
     # - the operator itself may induce negation (like subtraction)
@@ -52,7 +53,7 @@ def infer_mac_result_dtype(idtypes, possible_negation):
     return ret
 
 
-def _infer_node_datatype(model, node):
+def _infer_node_datatype(model, node, allow_scaledint_dtypes):
     """Infer output datatype(s) for a particular node. Returns True if any
     changes were made."""
     dt_identity_optypes = [
@@ -82,7 +83,7 @@ def _infer_node_datatype(model, node):
     idtypes = list(map(lambda x: model.get_tensor_datatype(x), node.input))
     odtypes = list(map(lambda x: model.get_tensor_datatype(x), node.output))
     op_type = node.op_type
-    if is_finn_op(node.domain):
+    if is_custom_op(node.domain):
         # handle DataType inference for CustomOp
         try:
             # lookup op_type in registry of CustomOps
@@ -97,7 +98,8 @@ def _infer_node_datatype(model, node):
             model.set_tensor_datatype(node.output[0], DataType["BIPOLAR"])
         elif node.op_type in mac_like_optypes:
             possible_negation = node.op_type in ["Sub"]
-            odtype = infer_mac_result_dtype(idtypes, possible_negation=possible_negation)
+            odtype_orig = model.get_tensor_datatype(node.output[0])
+            odtype = infer_mac_result_dtype(idtypes, odtype_orig, possible_negation=possible_negation)
             model.set_tensor_datatype(node.output[0], odtype)
         elif node.op_type in ["Resize", "Upsample"]:
             mode = get_by_name(node.attribute, "mode").s
@@ -136,6 +138,11 @@ def _infer_node_datatype(model, node):
                     model.set_tensor_datatype(o, odtype)
                 else:
                     model.set_tensor_datatype(o, DataType["FLOAT32"])
+    # if scaled-int dtype inference is disabled, replace those with FLOAT32
+    if not allow_scaledint_dtypes:
+        for out in node.output:
+            if "SCALEDINT" in model.get_tensor_datatype(out).get_canonical_name():
+                model.set_tensor_datatype(out, DataType["FLOAT32"])
     # compare old and new output dtypes to see if anything changed
     new_odtypes = list(map(lambda x: model.get_tensor_datatype(x), node.output))
     graph_modified = new_odtypes != odtypes
@@ -146,9 +153,13 @@ class InferDataTypes(Transformation):
     """Infer QONNX DataType info for all intermediate/output tensors based on
     inputs and node type."""
 
+    def __init__(self, allow_scaledint_dtypes=False):
+        super().__init__()
+        self.allow_scaledint_dtypes = allow_scaledint_dtypes
+
     def apply(self, model):
         graph = model.graph
         graph_modified = False
         for node in graph.node:
-            graph_modified |= _infer_node_datatype(model, node)
+            graph_modified |= _infer_node_datatype(model, node, self.allow_scaledint_dtypes)
         return (model, graph_modified)

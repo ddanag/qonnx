@@ -33,7 +33,7 @@ from pkgutil import get_data
 import qonnx.core.data_layout as DataLayout
 from qonnx.core.datatype import DataType
 from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.util.basic import qonnx_make_model
+from qonnx.util.basic import get_preferred_onnx_opset, qonnx_make_model
 
 
 def test_modelwrapper():
@@ -54,11 +54,6 @@ def test_modelwrapper():
     assert first_conv_iname != "" and (first_conv_iname is not None)
     assert first_conv_wname != "" and (first_conv_wname is not None)
     assert first_conv_oname != "" and (first_conv_oname is not None)
-    first_conv_weights = model.get_initializer(first_conv_wname)
-    assert first_conv_weights.shape == (8, 1, 5, 5)
-    first_conv_weights_rand = np.random.randn(8, 1, 5, 5)
-    model.set_initializer(first_conv_wname, first_conv_weights_rand)
-    assert (model.get_initializer(first_conv_wname) == first_conv_weights_rand).all()
     inp_cons = model.find_consumer(first_conv_iname)
     assert inp_cons == first_conv
     out_prod = model.find_producer(first_conv_oname)
@@ -73,6 +68,22 @@ def test_modelwrapper():
     inp_sparsity = {"dw": {"kernel_shape": [3, 3]}}
     model.set_tensor_sparsity(first_conv_iname, inp_sparsity)
     assert model.get_tensor_sparsity(first_conv_iname) == inp_sparsity
+    assert model.get_opset_imports() == {"": 8}
+
+
+def test_modelwrapper_set_get_rm_initializer():
+    raw_m = get_data("qonnx.data", "onnx/mnist-conv/model.onnx")
+    model = ModelWrapper(raw_m)
+    conv_nodes = model.get_nodes_by_op_type("Conv")
+    first_conv = conv_nodes[0]
+    first_conv_wname = first_conv.input[1]
+    first_conv_weights = model.get_initializer(first_conv_wname)
+    assert first_conv_weights.shape == (8, 1, 5, 5)
+    first_conv_weights_rand = np.random.randn(8, 1, 5, 5)
+    model.set_initializer(first_conv_wname, first_conv_weights_rand)
+    assert (model.get_initializer(first_conv_wname) == first_conv_weights_rand).all()
+    model.del_initializer(first_conv_wname)
+    assert model.get_initializer(first_conv_wname) is None
 
 
 def test_modelwrapper_graph_order():
@@ -192,3 +203,59 @@ def test_modelwrapper_setting_unsetting_datatypes():
     model.set_tensor_datatype(test_tensor, DataType["BIPOLAR"])
     ret = model.get_tensor_datatype(test_tensor)
     assert ret == DataType["BIPOLAR"], "Tensor datatype should follow setting."
+
+
+def test_modelwrapper_set_tensor_shape_multiple_inputs():
+    # Create a model with two inputs
+    in1 = onnx.helper.make_tensor_value_info("in1", onnx.TensorProto.FLOAT, [1, 2])
+    in2 = onnx.helper.make_tensor_value_info("in2", onnx.TensorProto.FLOAT, [3, 4])
+    add_node = onnx.helper.make_node("Add", inputs=["in1", "in2"], outputs=["out"])
+    out = onnx.helper.make_tensor_value_info("out", onnx.TensorProto.FLOAT, [3, 4])
+
+    graph = onnx.helper.make_graph(
+        nodes=[add_node],
+        name="multi_input_graph",
+        inputs=[in1, in2],
+        outputs=[out],
+    )
+
+    onnx_model = qonnx_make_model(graph, producer_name="multi-input-model")
+    model = ModelWrapper(onnx_model)
+
+    # Set tensor shape for one of the inputs
+    new_shape = [5, 6]
+    model.set_tensor_shape("in1", new_shape)
+    assert model.get_tensor_shape("in1") == new_shape
+    # The other input shape should remain unchanged
+    assert model.get_tensor_shape("in2") == [3, 4]
+    # check that order of inputs is preserved
+    assert model.graph.input[0].name == "in1"
+    assert model.graph.input[1].name == "in2"
+
+
+def test_modelwrapper_set_opset_import():
+    # Create a simple model
+    in1 = onnx.helper.make_tensor_value_info("in1", onnx.TensorProto.FLOAT, [4, 4])
+    out1 = onnx.helper.make_tensor_value_info("out1", onnx.TensorProto.FLOAT, [4, 4])
+    node = onnx.helper.make_node("Neg", inputs=["in1"], outputs=["out1"])
+    graph = onnx.helper.make_graph(
+        nodes=[node],
+        name="single_node_graph",
+        inputs=[in1],
+        outputs=[out1],
+    )
+    onnx_model = qonnx_make_model(graph, producer_name="opset-test-model")
+    model = ModelWrapper(onnx_model)
+
+    # Test setting new domain
+    model.set_opset_import("qonnx.custom_op.general", 1)
+    preferred_onnx_opset = get_preferred_onnx_opset()
+    assert model.get_opset_imports() == {"": preferred_onnx_opset, "qonnx.custom_op.general": 1}
+
+    # Test updating existing domain
+    model.set_opset_import("qonnx.custom_op.general", 2)
+    assert model.get_opset_imports() == {"": preferred_onnx_opset, "qonnx.custom_op.general": 2}
+
+    # Test setting ONNX main domain
+    model.set_opset_import("", 13)
+    assert model.get_opset_imports() == {"": 13, "qonnx.custom_op.general": 2}

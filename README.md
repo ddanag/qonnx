@@ -11,10 +11,11 @@
 <img align="left" src="https://xilinx.github.io/finn/img/TFC_1W2A.onnx.png" alt="QONNX example" style="margin-right: 20px" width="200"/>
 
 
-QONNX (Quantized ONNX) introduces three new custom operators -- [`Quant`](docs/qonnx-custom-ops/quant_op.md), [`BipolarQuant`](docs/qonnx-custom-ops/bipolar_quant_op.md), and [`Trunc`](docs/qonnx-custom-ops/trunc_op.md) -- in order to represent arbitrary-precision uniform quantization in ONNX. This enables:
-* Representation of binary, ternary, 3-bit, 4-bit, 6-bit or any other quantization.
+QONNX (Quantized ONNX) introduces several custom operators -- [`IntQuant`](docs/qonnx-custom-ops/intquant_op.md), [`FloatQuant`](docs/qonnx-custom-ops/floatquant_op.md), [`BipolarQuant`](docs/qonnx-custom-ops/bipolar_quant_op.md), and [`Trunc`](docs/qonnx-custom-ops/trunc_op.md) -- in order to represent arbitrary-precision integer and minifloat quantization in ONNX. This enables:
+* Representation of binary, ternary, 3-bit, 4-bit, 6-bit or any other integer/fixed-point quantization.
+* Representation of minifloat quantization with configurable exponent and mantissa bits.
 * Quantization is an operator itself, and can be applied to any parameter or layer input.
-* Flexible choices for scaling factor and zero-point granularity.
+* Flexible choices for scaling factor and zero-point granularity, also enabling [OCP MX datatypes](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf).
 * Quantized values are carried using standard `float` datatypes to remain ONNX protobuf-compatible.
 
 This repository contains a set of Python utilities to work with QONNX models, including but not limited to:
@@ -101,6 +102,7 @@ Inference cost for CNV_2W2A.onnx
 }
 ```
 
+You can use the `--cost-breakdown` option to generate a more detailed report that covers per-node (by name) and per-op-type information.
 You can read more about the BOPS metric in [this paper](https://www.frontiersin.org/articles/10.3389/frai.2021.676564/full), Section 4.2 Bit Operations.
 
 ### Convert between different quantization representations
@@ -114,15 +116,18 @@ Please see the documentation of the `QuantToQCDQ` transformation to learn more a
 
 ## Development
 
-Install in editable mode in a venv:
+Install in editable mode in a Python virtual environment:
 
 ```
 git clone https://github.com/fastmachinelearning/qonnx
 cd qonnx
-virtualenv -p python3.8 venv
+virtualenv -p python3.10 venv
 source venv/bin/activate
+pip install --upgrade pip
 pip install -e .[qkeras,testing]
 ```
+
+### Running tests
 
 Run entire test suite, parallelized across CPU cores:
 ```
@@ -133,6 +138,22 @@ Run a particular test and fall into pdb if it fails:
 ```
 pytest --pdb -k "test_extend_partition.py::test_extend_partition[extend_id1-2]"
 ```
+
+### Linting
+
+If you plan to make pull requests to the qonnx repo, linting will be required.
+We use a pre-commit hook to auto-format Python code and check for issues. See https://pre-commit.com/ for installation. Once you have `pre-commit`,
+you can install the hooks into your local clone of the qonnx repo:
+
+```
+cd qonnx
+source venv/bin/activate
+pip install pre-commit
+pre-commit install
+```
+
+Every time you commit some code, the pre-commit hooks will first run, performing various checks and fixes. In some cases pre-commit won’t be able to
+fix the issues and you may have to fix it manually, then run git commit once again. The checks are configured in .pre-commit-config.yaml under the repo root.
 
 ## Why QONNX?
 

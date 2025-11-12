@@ -51,11 +51,19 @@ def get_preferred_onnx_opset():
     return 11
 
 
+def get_preferred_qonnx_opset():
+    "Return preferred ONNX opset version for QONNX"
+    return 1
+
+
 def qonnx_make_model(graph_proto, **kwargs):
     "Wrapper around ONNX make_model with preferred qonnx opset version"
     opset_imports = kwargs.pop("opset_imports", None)
     if opset_imports is None:
-        opset_imports = [make_opsetid("", get_preferred_onnx_opset())]
+        opset_imports = [
+            make_opsetid("", get_preferred_onnx_opset()),
+            make_opsetid("qonnx.custom_op.general", get_preferred_qonnx_opset()),
+        ]
         kwargs["opset_imports"] = opset_imports
     else:
         kwargs["opset_imports"] = opset_imports
@@ -63,8 +71,21 @@ def qonnx_make_model(graph_proto, **kwargs):
 
 
 def is_finn_op(op_type):
-    "Return whether given op_type string is a QONNX or FINN custom op"
-    return op_type.startswith("finn") or op_type.startswith("qonnx.custom_op") or op_type.startswith("onnx.brevitas")
+    """Deprecated: Use is_custom_op from qonnx.custom_op.registry instead.
+
+    Return whether given op_type string is a QONNX or FINN custom op.
+    This function uses hard-coded string matching and will be removed in QONNX v1.0.
+    Use the registry-based is_custom_op for better accuracy and extensibility.
+    """
+    import warnings
+    warnings.warn(
+        "is_finn_op is deprecated and will be removed in QONNX v1.0. "
+        "Use 'from qonnx.custom_op.registry import is_custom_op' instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    from qonnx.custom_op.registry import is_custom_op
+    return is_custom_op(op_type)
 
 
 def get_num_default_workers():
@@ -130,7 +151,7 @@ def random_string(stringLength=6):
 def interleave_matrix_outer_dim_from_partitions(matrix, n_partitions):
     """Interleave the outermost dimension of a matrix from given
     partitions (n_partitions)."""
-    if type(matrix) != np.ndarray or matrix.dtype != np.float32:
+    if type(matrix) != np.ndarray or matrix.dtype not in [np.float32, np.float16]:
         # try to convert to a float numpy array (container dtype is float)
         matrix = np.asarray(matrix, dtype=np.float32)
     shp = matrix.shape
@@ -179,7 +200,7 @@ def pad_tensor_to_multiple_of(ndarray, pad_to_dims, val=0, distr_pad=False):
     will be inserted after the existing values; otherwise it will be split
     evenly between before and after the existing values, with one extra value
     inserted after if the padding amount is not divisible by two."""
-    if type(ndarray) != np.ndarray or ndarray.dtype != np.float32:
+    if type(ndarray) != np.ndarray or ndarray.dtype not in [np.float32, np.float16]:
         # try to convert to a float numpy array (container dtype is float)
         ndarray = np.asarray(ndarray, dtype=np.float32)
     assert ndarray.ndim == len(
@@ -233,12 +254,15 @@ def gen_finn_dt_tensor(finn_dt, tensor_shape):
         int_dt = DataType["INT" + str(finn_dt.bitwidth())]
         tensor_values = np.random.randint(int_dt.min(), high=int_dt.max() + 1, size=tensor_shape)
         tensor_values = tensor_values * finn_dt.scale_factor()
-    elif finn_dt == DataType["FLOAT32"]:
+    elif finn_dt in [DataType["FLOAT32"], DataType["FLOAT16"]]:
         tensor_values = np.random.randn(*tensor_shape)
     else:
         raise ValueError("Datatype {} is not supported, no tensor could be generated".format(finn_dt))
     # always use float type as container
-    return tensor_values.astype(np.float32)
+    if finn_dt == DataType["FLOAT16"]:
+        return tensor_values.astype(np.float16)
+    else:
+        return tensor_values.astype(np.float32)
 
 
 def calculate_signed_dot_prod_range(dt_a, dt_b, len):
@@ -285,13 +309,9 @@ def sanitize_quant_values(model, node_tensors, execution_context, check_values=F
             continue
         current_values = execution_context[tensor_name]
         updated_values = current_values
-        has_to_be_rounded = False
-        # TODO: vectorize with numpy
-        for value in np.nditer(current_values):
-            if not dtype.allowed(value):
-                has_to_be_rounded = True
-                break
-        if has_to_be_rounded:
+        is_allowed = dtype.allowed(current_values)
+        is_allowed = is_allowed.all() if isinstance(is_allowed, np.ndarray) else is_allowed
+        if not is_allowed:
             updated_values = np.round(current_values)
             warnings.warn(
                 "The values of tensor {} can't be represented "
@@ -303,15 +323,15 @@ def sanitize_quant_values(model, node_tensors, execution_context, check_values=F
         if max_error <= get_execution_error_thresh():
             if check_values is True:
                 # check again if values can now be represented with set finn datatype
-                # TODO: vectorize with numpy
-                for value in np.nditer(updated_values):
-                    if not dtype.allowed(value):
-                        raise Exception(
-                            """Values can't be represented with set
-                                finn datatype ({}) for input {}""".format(
-                                dtype, tensor_name
-                            )
+                is_allowed = dtype.allowed(updated_values)
+                is_allowed = is_allowed.all() if isinstance(is_allowed, np.ndarray) else is_allowed
+                if not is_allowed:
+                    raise Exception(
+                        """Values can't be represented with set
+                            finn datatype ({}) for input {}""".format(
+                            dtype, tensor_name
                         )
+                    )
             execution_context[tensor_name] = updated_values
         else:
             raise Exception(
