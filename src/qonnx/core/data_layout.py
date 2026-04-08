@@ -29,6 +29,8 @@
 # predefined lists of strings to have a cannonical way of expresing data layout
 # annotations
 
+NDHWC = ["N", "D", "H", "W", "C"]
+NCDHW = ["N", "C", "D", "H", "W"]
 NHWC = ["N", "H", "W", "C"]
 NCHW = ["N", "C", "H", "W"]
 NCW = ["N", "C", "W"]
@@ -42,8 +44,8 @@ def is_channels_last(layout):
 
 
 def get_channels_last_layout_for_ndims(ndims):
-    return {4: NHWC, 3: NWC, 2: NC}[ndims]
+    return {5: NDHWC, 4: NHWC, 3: NWC, 2: NC}[ndims]
 
 
 def get_channels_first_layout_for_ndims(ndims):
-    return {4: NCHW, 3: NCW, 2: NC}[ndims]
+    return {5: NCDHW, 4: NCHW, 3: NCW, 2: NC}[ndims]

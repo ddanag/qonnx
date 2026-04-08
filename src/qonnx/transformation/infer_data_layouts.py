@@ -43,6 +43,10 @@ def _dims_to_layout(model, node, ndims):
             if node.op_type == "MultiThreshold" or node.op_type == "QuantAvgPool2d":
                 mt_inst = registry.getCustomOp(node)
                 layout = mt_inst.get_nodeattr("data_layout")
+                if layout == "NDHWC" and ndims == 5:
+                    return DataLayout.NDHWC
+                if layout == "NCDHW" and ndims == 5:
+                    return DataLayout.NCDHW
                 if layout == "NHWC" and ndims == 4:
                     return DataLayout.NHWC
                 elif layout == "NCHW" and ndims == 4:
@@ -62,6 +66,8 @@ def _dims_to_layout(model, node, ndims):
                     return layout
                 else:
                     # Fallback: guess based on number of output dims
+                    if ndims == 5:
+                        return DataLayout.NDHWC
                     if ndims == 4:
                         return DataLayout.NHWC
                     elif ndims == 3:
@@ -81,6 +87,8 @@ def _dims_to_layout(model, node, ndims):
                 return layout
             # Fallback to the same defaults as for the FINN-Ops above
             else:
+                if ndims == 5:
+                    return DataLayout.NDHWC
                 if ndims == 4:
                     return DataLayout.NHWC
                 elif ndims == 3:
@@ -147,7 +155,11 @@ class InferDataLayouts(Transformation):
         inp_name = graph.input[0].name
         if model.get_tensor_layout(inp_name) is None:
             inp_shape = model.get_tensor_shape(inp_name)
-            if len(inp_shape) == 4:
+            if len(inp_shape) == 5:
+                warnings.warn("Assuming 5D input is NCDHW")
+                model.set_tensor_layout(inp_name, DataLayout.NCDHW)
+                graph_modified = True
+            elif len(inp_shape) == 4:
                 warnings.warn("Assuming 4D input is NCHW")
                 model.set_tensor_layout(inp_name, DataLayout.NCHW)
                 graph_modified = True
